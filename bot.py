@@ -5,11 +5,11 @@ import asyncio
 from flask import Flask, request, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler
-from werkzeug.wrappers import Response  # Fix async issues in Flask
 
-# Get bot token and webhook URL from environment variables
+# Load bot token and webhook URL from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Set this in Render settings
+PORT = int(os.getenv("PORT", 10000))  # Default port for Flask
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is not set! Add it as an environment variable.")
@@ -34,6 +34,8 @@ HUMILIATION_MESSAGES = [
     "💸 Worthless! ₹{amount} disappears into Goddess Drsika's divine purse!",
     "👑 All your money belongs to Goddess Drsika! ₹{amount} is just the beginning!",
 ]
+
+# --- Telegram Bot Handlers ---
 
 async def start(update: Update, context):
     await update.message.reply_text("Welcome, worthless slave! Use /spin to donate.")
@@ -69,22 +71,23 @@ async def reset(update: Update, context):
     chat_sessions[chat_id] = []
     await update.message.reply_text("🔥 Account reset! Ready to be drained again, pig?")
 
+# --- Flask Routes ---
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "Bot is running!"})
 
-async def webhook_handler():
-    """Process the incoming webhook update from Telegram."""
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    """Process incoming webhook updates from Telegram."""
     try:
         update = Update.de_json(request.get_json(), application.bot)
         await application.process_update(update)
     except Exception as e:
         logging.error(f"Error processing update: {e}")
-    return Response("OK", status=200)
+    return jsonify({"status": "ok"}), 200
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    return asyncio.run(webhook_handler())  # Run async webhook handler synchronously
+# --- Webhook Setup ---
 
 async def set_webhook():
     if not WEBHOOK_URL:
@@ -92,23 +95,35 @@ async def set_webhook():
         return
     
     try:
-        result = await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        if result:
+        success = await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        if success:
             logging.info(f"✅ Webhook successfully set to {WEBHOOK_URL}/webhook")
         else:
             logging.error("❌ Failed to set webhook! Check your bot token & URL.")
     except Exception as e:
         logging.error(f"⚠️ Error setting webhook: {e}")
 
-if __name__ == "__main__":
+# --- Running the Bot and Flask ---
+
+async def main():
+    """Start the Telegram bot and Flask web server."""
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("spin", spin))
     application.add_handler(CommandHandler("history", history))
     application.add_handler(CommandHandler("reset", reset))
 
-    # Set webhook
-    asyncio.run(set_webhook())
+    # Set webhook for Telegram bot
+    await set_webhook()
 
-    # Run Flask app on correct port for Render
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+    # Run Flask in an async-friendly way
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
+
+    config = Config()
+    config.bind = [f"0.0.0.0:{PORT}"]
+    await serve(app, config)
+
+if __name__ == "__main__":
+    # Run everything inside asyncio event loop
+    asyncio.run(main())
